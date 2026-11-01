@@ -1,7 +1,7 @@
 {
   "id": "ismycheckout",
   "name": "IsMyCheckout",
-  "version": "1.0.2",
+  "version": "1.0.3",
   "minAppVersion": "1.13.0",
   "description": "Sync your IsMyCheckout stores into linked notes: sales, products, checkouts, campaigns, upsells, visits and earnings. Read-only.",
   "author": "IsMyCheckout",

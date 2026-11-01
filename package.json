@@ -1,6 +1,6 @@
 {
   "name": "ismycheckout-obsidian",
-  "version": "1.0.2",
+  "version": "1.0.3",
   "description": "Plugin oficial de IsMyCheckout para Obsidian",
   "main": "main.js",
   "scripts": {
