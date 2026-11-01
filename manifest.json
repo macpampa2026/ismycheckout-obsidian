@@ -1,0 +1,10 @@
+{
+  "id": "ismycheckout",
+  "name": "IsMyCheckout",
+  "version": "1.0.0",
+  "minAppVersion": "1.4.0",
+  "description": "Sync your IsMyCheckout stores (products, checkouts, monthly sales and campaigns) into linked notes. Read-only.",
+  "author": "IsMyCheckout",
+  "authorUrl": "https://ismycheckout.com",
+  "isDesktopOnly": false
+}
