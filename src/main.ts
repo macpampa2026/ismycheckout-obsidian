@@ -1,4 +1,4 @@
-import { App, Notice, Plugin, PluginSettingTab, Setting, TFile, normalizePath, requestUrl, moment } from "obsidian";
+import { App, Notice, Plugin, PluginSettingTab, Setting, SettingDefinitionItem, TFile, normalizePath, requestUrl, moment } from "obsidian";
 
 // Plugin oficial de IsMyCheckout: baja las notas de tus tiendas (solo lectura) y las mantiene al día.
 // Respeta lo que escribas debajo de «## Mis notas» en cada nota.
@@ -23,6 +23,36 @@ const DEFECTO: Ajustes = {
 
 const MIS_NOTAS = "## Mis notas";
 
+interface TiendaNotas {
+  carpeta: string;
+  archivos: Record<string, string>;
+}
+
+interface Respuesta {
+  ok: boolean;
+  error?: string;
+  tiendas: TiendaNotas[];
+}
+
+function esObjeto(x: unknown): x is Record<string, unknown> {
+  return typeof x === "object" && x !== null && !Array.isArray(x);
+}
+
+// Valida la respuesta del servidor sin confiar en su forma.
+function leerRespuesta(x: unknown): Respuesta {
+  if (!esObjeto(x)) return { ok: false, tiendas: [] };
+  const tiendas: TiendaNotas[] = [];
+  if (Array.isArray(x.tiendas)) {
+    for (const t of x.tiendas as unknown[]) {
+      if (!esObjeto(t) || typeof t.carpeta !== "string" || !esObjeto(t.archivos)) continue;
+      const archivos: Record<string, string> = {};
+      for (const [k, v] of Object.entries(t.archivos)) if (typeof v === "string") archivos[k] = v;
+      tiendas.push({ carpeta: t.carpeta, archivos });
+    }
+  }
+  return { ok: x.ok === true, error: typeof x.error === "string" ? x.error : undefined, tiendas };
+}
+
 type Textos = Record<string, string>;
 const ES: Textos = {
   sync: "Sincronizar IsMyCheckout",
@@ -31,6 +61,7 @@ const ES: Textos = {
   error: "IsMyCheckout: no se pudo sincronizar. {e}",
   sincronizando: "IsMyCheckout: sincronizando…",
   clave: "Clave de Obsidian",
+  clavePh: "Pegá tu clave acá",
   claveDesc: "Creala en tu panel de IsMyCheckout: Configuración → Conectar con Obsidian. Es solo de lectura.",
   carpeta: "Carpeta",
   carpetaDesc: "Dónde se guardan las notas dentro de tu bóveda.",
@@ -50,6 +81,7 @@ const EN: Textos = {
   error: "IsMyCheckout: sync failed. {e}",
   sincronizando: "IsMyCheckout: syncing…",
   clave: "Obsidian key",
+  clavePh: "Paste your key here",
   claveDesc: "Create it in your IsMyCheckout dashboard: Configuración → Conectar con Obsidian. It is read-only.",
   carpeta: "Folder",
   carpetaDesc: "Where the notes are saved inside your vault.",
@@ -93,14 +125,15 @@ export default class IsMyCheckoutPlugin extends Plugin {
   private enCurso = false;
   private timer: number | null = null;
 
-  async onload() {
-    this.ajustes = Object.assign({}, DEFECTO, await this.loadData());
-    this.addRibbonIcon("refresh-cw", t("sync"), () => this.sincronizar(true));
-    this.addCommand({ id: "sincronizar", name: t("sync"), callback: () => this.sincronizar(true) });
+  async onload(): Promise<void> {
+    const guardado: unknown = await this.loadData();
+    this.ajustes = Object.assign({}, DEFECTO, esObjeto(guardado) ? (guardado as Partial<Ajustes>) : {});
+    this.addRibbonIcon("refresh-cw", t("sync"), () => { void this.sincronizar(true); });
+    this.addCommand({ id: "sincronizar", name: t("sync"), callback: () => { void this.sincronizar(true); } });
     this.addSettingTab(new Pestana(this.app, this));
     this.programar();
     if (this.ajustes.alAbrir && this.ajustes.clave) {
-      this.app.workspace.onLayoutReady(() => this.sincronizar(false));
+      this.app.workspace.onLayoutReady(() => { void this.sincronizar(false); });
     }
   }
 
@@ -113,7 +146,7 @@ export default class IsMyCheckoutPlugin extends Plugin {
     this.timer = null;
     const min = this.ajustes.cadaMinutos;
     if (min > 0) {
-      this.timer = window.setInterval(() => this.sincronizar(false), Math.max(15, min) * 60 * 1000);
+      this.timer = window.setInterval(() => { void this.sincronizar(false); }, Math.max(15, min) * 60 * 1000);
       this.registerInterval(this.timer);
     }
   }
@@ -129,7 +162,7 @@ export default class IsMyCheckoutPlugin extends Plugin {
     for (const p of partes) {
       acc = acc ? acc + "/" + p : p;
       if (!this.app.vault.getAbstractFileByPath(acc)) {
-        try { await this.app.vault.createFolder(acc); } catch (_e) { /* ya existe */ }
+        try { await this.app.vault.createFolder(acc); } catch { /* ya existe */ }
       }
     }
   }
@@ -148,17 +181,19 @@ export default class IsMyCheckoutPlugin extends Plugin {
         headers: { Authorization: "Bearer " + this.ajustes.clave.trim() },
         throw: false,
       });
-      const d = r.json;
-      if (r.status !== 200 || !d || !d.ok) throw new Error((d && d.error) || "HTTP " + r.status);
+      let crudo: unknown = null;
+      try { crudo = r.json as unknown; } catch { crudo = null; }
+      const d = leerRespuesta(crudo);
+      if (r.status !== 200 || !d.ok) throw new Error(d.error || "HTTP " + r.status);
       let n = 0;
       const base = normalizePath(this.ajustes.carpeta || "IsMyCheckout");
-      for (const tienda of d.tiendas || []) {
-        const carpeta = String(tienda.carpeta || "");
+      for (const tienda of d.tiendas) {
+        const carpeta = tienda.carpeta;
         if (!carpeta || carpeta.includes("/") || carpeta.includes("..")) continue;
-        for (const rel of Object.keys(tienda.archivos || {})) {
+        for (const rel of Object.keys(tienda.archivos)) {
           if (!rutaSegura(rel)) continue;
           const ruta = normalizePath(base + "/" + carpeta + "/" + rel);
-          const nuevo = String(tienda.archivos[rel]);
+          const nuevo = tienda.archivos[rel];
           const f = this.app.vault.getAbstractFileByPath(ruta);
           if (f instanceof TFile) {
             let cambio = false;
@@ -179,7 +214,7 @@ export default class IsMyCheckoutPlugin extends Plugin {
       await this.guardar();
       if (avisar) new Notice(t("listo", { n }));
     } catch (e) {
-      if (avisar) new Notice(t("error", { e: (e as Error).message || "" }), 10000);
+      if (avisar) new Notice(t("error", { e: e instanceof Error ? e.message : "" }), 10000);
     } finally {
       if (aviso) aviso.hide();
       this.enCurso = false;
@@ -195,33 +230,38 @@ class Pestana extends PluginSettingTab {
     this.plugin = plugin;
   }
 
-  display(): void {
-    const { containerEl } = this;
-    containerEl.empty();
+  // Ajustes declarativos: Obsidian los muestra y los encuentra en su buscador de ajustes.
+  getSettingDefinitions(): SettingDefinitionItem[] {
     const a = this.plugin.ajustes;
-
-    new Setting(containerEl).setName(t("clave")).setDesc(t("claveDesc")).addText((tx) => {
-      tx.inputEl.type = "password";
-      tx.setPlaceholder("imcobs_…").setValue(a.clave).onChange(async (v) => { a.clave = v.trim(); await this.plugin.guardar(); });
-    });
-    new Setting(containerEl).setName(t("carpeta")).setDesc(t("carpetaDesc")).addText((tx) =>
-      tx.setValue(a.carpeta).onChange(async (v) => { a.carpeta = v.trim() || "IsMyCheckout"; await this.plugin.guardar(); }));
-    new Setting(containerEl).setName(t("cada")).setDesc(t("cadaDesc")).addText((tx) =>
-      tx.setValue(String(a.cadaMinutos)).onChange(async (v) => {
-        const n = parseInt(v, 10);
-        a.cadaMinutos = isNaN(n) || n <= 0 ? 0 : Math.max(15, n);
-        await this.plugin.guardar();
-        this.plugin.programar();
-      }));
-    new Setting(containerEl).setName(t("alAbrir")).addToggle((tg) =>
-      tg.setValue(a.alAbrir).onChange(async (v) => { a.alAbrir = v; await this.plugin.guardar(); }));
-    new Setting(containerEl).setName(t("servidor")).setDesc(t("servidorDesc")).addText((tx) =>
-      tx.setValue(a.servidor).onChange(async (v) => { a.servidor = v.trim() || DEFECTO.servidor; await this.plugin.guardar(); }));
-    new Setting(containerEl)
-      .setDesc(a.ultima ? t("ultima", { f: new Date(a.ultima).toLocaleString() }) : t("nunca"))
-      .addButton((b) => b.setButtonText(t("ahora")).setCta().onClick(async () => {
-        await this.plugin.sincronizar(true);
-        this.display();
-      }));
+    const guardar = async (): Promise<void> => { await this.plugin.guardar(); };
+    return [
+      { name: t("clave"), desc: t("claveDesc"), aliases: ["IsMyCheckout", "key", "clave"],
+        render: (s: Setting) => { s.addText((tx) => {
+          tx.inputEl.type = "password";
+          tx.setPlaceholder(t("clavePh")).setValue(a.clave).onChange(async (v) => { a.clave = v.trim(); await guardar(); });
+        }); } },
+      { name: t("carpeta"), desc: t("carpetaDesc"),
+        render: (s: Setting) => { s.addText((tx) =>
+          tx.setValue(a.carpeta).onChange(async (v) => { a.carpeta = v.trim() || "IsMyCheckout"; await guardar(); })); } },
+      { name: t("cada"), desc: t("cadaDesc"),
+        render: (s: Setting) => { s.addText((tx) =>
+          tx.setValue(String(a.cadaMinutos)).onChange(async (v) => {
+            const n = parseInt(v, 10);
+            a.cadaMinutos = isNaN(n) || n <= 0 ? 0 : Math.max(15, n);
+            await guardar();
+            this.plugin.programar();
+          })); } },
+      { name: t("alAbrir"),
+        render: (s: Setting) => { s.addToggle((tg) =>
+          tg.setValue(a.alAbrir).onChange(async (v) => { a.alAbrir = v; await guardar(); })); } },
+      { name: t("servidor"), desc: t("servidorDesc"),
+        render: (s: Setting) => { s.addText((tx) =>
+          tx.setValue(a.servidor).onChange(async (v) => { a.servidor = v.trim() || DEFECTO.servidor; await guardar(); })); } },
+      { name: t("ahora"), desc: a.ultima ? t("ultima", { f: new Date(a.ultima).toLocaleString() }) : t("nunca"),
+        render: (s: Setting) => { s.addButton((b) => b.setButtonText(t("ahora")).setCta().onClick(async () => {
+          await this.plugin.sincronizar(true);
+          this.update();
+        })); } },
+    ];
   }
 }
