@@ -161,9 +161,13 @@ export default class IsMyCheckoutPlugin extends Plugin {
           const nuevo = String(tienda.archivos[rel]);
           const f = this.app.vault.getAbstractFileByPath(ruta);
           if (f instanceof TFile) {
-            const viejo = await this.app.vault.read(f);
-            const final = mezclar(nuevo, viejo);
-            if (final !== viejo) { await this.app.vault.modify(f, final); n++; }
+            let cambio = false;
+            await this.app.vault.process(f, (viejo) => {
+              const final = mezclar(nuevo, viejo);
+              cambio = final !== viejo;
+              return final;
+            });
+            if (cambio) n++;
           } else if (!f) {
             await this.asegurarCarpeta(ruta);
             await this.app.vault.create(ruta, nuevo);
@@ -176,7 +180,6 @@ export default class IsMyCheckoutPlugin extends Plugin {
       if (avisar) new Notice(t("listo", { n }));
     } catch (e) {
       if (avisar) new Notice(t("error", { e: (e as Error).message || "" }), 10000);
-      console.error("IsMyCheckout", e);
     } finally {
       if (aviso) aviso.hide();
       this.enCurso = false;
